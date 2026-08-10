@@ -1,19 +1,16 @@
-import time
 import logging
-from threading import Thread
-from string import Formatter
-from typing import Callable, Iterable
+import time
 from collections import defaultdict
+from collections.abc import Callable, Iterable
+from string import Formatter
+from threading import Thread
 
 import polars as pl
 
-from .processors import (
-    DataframeLLMAnalyzer,
-    ProcessorOutput
-)
-from .utils import get_thread_parameters, readable_time
-from .chains import simple_data_extractor, LLMChainContext
 from .base_env import get_base_settings
+from .chains import LLMChainContext, simple_data_extractor
+from .processors import DataframeLLMAnalyzer, ProcessorOutput
+from .utils import get_thread_parameters, readable_time
 
 
 def assembly_dataframe(dataframes: list[pl.DataFrame]) -> pl.DataFrame:

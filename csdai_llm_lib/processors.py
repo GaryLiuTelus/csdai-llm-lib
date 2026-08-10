@@ -1,21 +1,23 @@
 import logging
-
-from dataclasses import dataclass
-from typing import Callable, List, Any, cast
 from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import reduce
+from typing import Any, cast
+
+import polars as pl
+from langchain_core.exceptions import OutputParserException
+from langchain_core.runnables.base import Runnable, RunnableSequence
+from langchain_openai import ChatOpenAI
 from openai import (
-    RateLimitError,
     APIConnectionError,
     APITimeoutError,
-    InternalServerError
+    InternalServerError,
+    RateLimitError,
 )
-from langchain_openai import ChatOpenAI
-from langchain_core.runnables.base import Runnable, RunnableSequence
-from langchain_core.exceptions import OutputParserException
-from pydantic.types import SecretStr
 from pydantic import ValidationError
-import polars as pl
+from pydantic.types import SecretStr
+
 retryable_errors = (
     RateLimitError,
     APIConnectionError,
@@ -33,7 +35,7 @@ class ProcessorOutput:
 class DataframeLLMAnalyzer:
     data: pl.DataFrame
     llm_chain: Runnable
-    input_columns: List[str]
+    input_columns: list[str]
     llm_logger: logging.Logger
     extra_context: dict[int, Callable]
     data_index: int = 1
@@ -107,7 +109,7 @@ class DataframeLLMAnalyzer:
 
                 if idx % 500 == 0:
                     self.llm_logger.info("%d records of data %d has been processed!", idx, self.data_index)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # Last-resort safety net: never let one record abort the batch.
                 self.llm_logger.error("Unexpected error (data %d, record %d):\n%s", self.data_index, idx, e)
                 llm_failed.append(row)

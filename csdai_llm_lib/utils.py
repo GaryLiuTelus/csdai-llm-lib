@@ -1,15 +1,16 @@
 import io
+import logging
 import os
 import time
-import logging
-from pathlib import Path
-from typing import cast, Optional, Callable
+from collections.abc import Callable
 from functools import wraps
+from pathlib import Path
+from typing import cast
 
 import polars as pl
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery, secretmanager
 from google.cloud.bigquery import WriteDisposition
-from google.api_core.exceptions import NotFound
 
 from .base_env import get_base_settings
 from .processors import ProcessorOutput
@@ -67,7 +68,7 @@ def get_thread_parameters(data_size: int) -> tuple[int, int]:
 
     return thread_chunk_size, thread_count
 
-def get_secret(secret_id: str, project: str, version: Optional[str] = None) -> str:
+def get_secret(secret_id: str, project: str, version: str | None = None) -> str:
     secret_client = secretmanager.SecretManagerServiceClient()
     version = version or "latest"
     response = secret_client.access_secret_version(
@@ -77,8 +78,8 @@ def get_secret(secret_id: str, project: str, version: Optional[str] = None) -> s
     )
     return response.payload.data.decode()
 
-def read_data(query_path: str, base_file_path: str = "", logger: Optional[logging.Logger]=None, **kwargs) -> pl.DataFrame:
-    logger = logger or logging.getLogger(__file__)
+def read_data(query_path: str, base_file_path: str = "", logger: logging.Logger | None=None, **kwargs) -> pl.DataFrame:
+    logger = logger or logging.getLogger(__name__)
     script_path = Path(query_path)
     base_path = Path(base_file_path)
     if not script_path.is_absolute():

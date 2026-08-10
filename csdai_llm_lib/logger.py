@@ -1,12 +1,14 @@
 import logging
 import sys
-from json import dumps
 from dataclasses import dataclass
+from json import dumps
 
-from google.cloud.logging import Client as CloudLoggingClient, handlers as gcp_logging_handlers
+from google.cloud.logging import Client as CloudLoggingClient
+from google.cloud.logging import handlers as gcp_logging_handlers
 from httplib2 import Http
 
 from .base_env import get_base_settings
+
 
 class GoogleChatLoggingHandler(logging.Handler):
 
@@ -23,7 +25,7 @@ class GoogleChatLoggingHandler(logging.Handler):
                 headers={"Content-Type": "application/json; charset=UTF-8"},
                 body=dumps({"text": self.format(record)})
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             self.handleError(record)
 @dataclass
 class LLMLogger:
@@ -105,6 +107,6 @@ class LLMLogger:
             try:
                 handler.flush()
                 handler.close()
-            except Exception:  # pylint: disable = broad-except
+            except Exception:  # noqa: BLE001, S110
                 pass
             self._logger.removeHandler(handler)
