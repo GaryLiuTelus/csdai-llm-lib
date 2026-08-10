@@ -1,16 +1,18 @@
-from typing import Callable, Type
-from pydantic import BaseModel
-from abc import abstractmethod
-from dataclasses import dataclass, field
 import logging
+from abc import abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import SystemMessage
-from langchain_core.runnables import Runnable, RunnableSequence
-from langchain_core.output_parsers.pydantic import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import SystemMessage
+from langchain_core.output_parsers.pydantic import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable, RunnableSequence
+from pydantic import BaseModel
+
+from .processors import ChatClient, LLMChainBuilder
 from .utils import get_secret
-from .processors import LLMChainBuilder, ChatClient
+
 
 class NoneHandlingPydanticOutputParser(PydanticOutputParser):
     def parse(self, text: str):
@@ -80,8 +82,8 @@ class LLMChain:
 
 @dataclass
 class LLMChainContext:
-    llm_chain: Type[LLMChain]
-    output_schema: Type[BaseModel]
+    llm_chain: type[LLMChain]
+    output_schema: type[BaseModel]
     init_prompt_template: str
     default_model_name: str
     logger: logging.Logger
