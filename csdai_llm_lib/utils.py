@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import cast
+from typing import Concatenate, ParamSpec, cast
 
 import polars as pl
 from google.api_core.exceptions import NotFound
@@ -15,7 +15,8 @@ from google.cloud.bigquery import WriteDisposition
 from .base_env import get_base_settings
 from .processors import ProcessorOutput
 
-DataProcessor = Callable[[pl.DataFrame], ProcessorOutput]
+P = ParamSpec("P")
+DataProcessor = Callable[Concatenate[pl.DataFrame, P], ProcessorOutput]
 
 def get_bq_client() -> bigquery.Client:
     return bigquery.Client(project=get_base_settings().project_id)
@@ -131,12 +132,12 @@ def readable_time(tot_seconds: float) -> str:
     if seconds > 0:
         result += f" {seconds:.2f} second(s)"
     return result.strip()
-def data_processing_timer(logger: logging.Logger | None = None) -> Callable[[DataProcessor], DataProcessor]:
-    def func_wrapper(func: DataProcessor) -> DataProcessor:
+def data_processing_timer(logger: logging.Logger | None = None) -> Callable[[DataProcessor[P]], DataProcessor[P]]:
+    def func_wrapper(func: DataProcessor[P]) -> DataProcessor[P]:
         @wraps(func)
-        def decorated(input_data: pl.DataFrame) -> ProcessorOutput:
+        def decorated(input_data: pl.DataFrame, *args: P.args, **kwargs: P.kwargs) -> ProcessorOutput:
             start = time.time()
-            output_data = func(input_data)
+            output_data = func(input_data, *args, **kwargs)
             if logger is not None:
                 logger.info(
                         """Data has been processed successfully by LLM.
