@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import reduce
 from typing import Any, cast
 
@@ -25,6 +26,16 @@ retryable_errors = (
     InternalServerError,
 )
 
+class ProgressDisplay(StrEnum):
+    """How to report record-level progress while a job runs."""
+
+    NONE = "none"
+    """No progress bar; periodic counts go to the logger (default)."""
+    AGGREGATE = "aggregate"
+    """One bar covering every record across all threads."""
+    PER_THREAD = "per_thread"
+    """One bar per data chunk, stacked by data index."""
+
 @dataclass
 class ProcessorOutput:
     completed: pl.DataFrame
@@ -41,9 +52,20 @@ class DataframeLLMAnalyzer:
     data_index: int = 1
 
 
-    def get_results(self, unpacker_funcs: dict[str, Callable[[dict[str, Any]], Any]]) -> ProcessorOutput:
+    def get_results(
+            self,
+            unpacker_funcs: dict[str, Callable[[dict[str, Any]], Any]],
+            progress_hook: Callable[[int], Any] | None = None,
+        ) -> ProcessorOutput:
+        """Run the chain over every row.
+
+        `progress_hook` is called with 1 per finished record — pass a tqdm
+        bar's `update` to drive a bar the caller owns. Supplying it suppresses
+        the periodic progress logging, so you get one or the other.
+        """
         llm_completed, input_defects, llm_failed = [], [], []
         skipped_data: defaultdict[int, list[dict]]= defaultdict(list)
+        log_progress = progress_hook is None
         for idx, row in enumerate(self.data.iter_rows(named=True), start=1):
             try:
                 invoke_input = {}
@@ -107,13 +129,17 @@ class DataframeLLMAnalyzer:
                 else:
                     llm_failed.append(row)
 
-                if idx % 500 == 0:
+                if log_progress and idx % 500 == 0:
                     self.llm_logger.info("%d records of data %d has been processed!", idx, self.data_index)
             except Exception as e:  # noqa: BLE001
                 # Last-resort safety net: never let one record abort the batch.
                 self.llm_logger.error("Unexpected error (data %d, record %d):\n%s", self.data_index, idx, e)
                 llm_failed.append(row)
                 continue
+            finally:
+                # In `finally` so records that `continue` early still count.
+                if progress_hook is not None:
+                    progress_hook(1)
         return ProcessorOutput(
             pl.DataFrame(llm_completed),
             pl.DataFrame(input_defects),

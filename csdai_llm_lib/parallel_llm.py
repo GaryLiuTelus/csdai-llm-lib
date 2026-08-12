@@ -3,13 +3,15 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from string import Formatter
-from threading import Thread
+from threading import Lock, Thread
+from typing import Any
 
 import polars as pl
+from tqdm.auto import tqdm
 
 from .base_env import get_base_settings
 from .chains import LLMChainContext, simple_data_extractor
-from .processors import DataframeLLMAnalyzer, ProcessorOutput
+from .processors import DataframeLLMAnalyzer, ProcessorOutput, ProgressDisplay
 from .utils import get_thread_parameters, readable_time
 
 
@@ -41,6 +43,36 @@ def assembly_dataframe(dataframes: list[pl.DataFrame]) -> pl.DataFrame:
     )
     return result
 
+class AggregateProgress:
+    """One bar for the whole job: records drive the bar, chunks drive the postfix.
+
+    Rendered as e.g.
+    `processing:  45%|####      | 4500/10000 [12:31<15:02, 5.99record/s, 3/8 threads done]`
+    """
+
+    def __init__(self, total_records: int, total_chunks: int) -> None:
+        self._bar = tqdm(total=total_records, desc="processing", unit="record")
+        self._total_chunks = total_chunks
+        self._done_chunks = 0
+        # tqdm serialises its own counter; this guards ours.
+        self._lock = Lock()
+        self._render()
+
+    def record_done(self, n: int = 1) -> None:
+        self._bar.update(n)
+
+    def chunk_done(self) -> None:
+        with self._lock:
+            self._done_chunks += 1
+            self._render()
+
+    def _render(self) -> None:
+        self._bar.set_postfix_str(f"{self._done_chunks}/{self._total_chunks} threads done", refresh=True)
+
+    def close(self) -> None:
+        self._bar.close()
+
+
 def multi_thread_llm(
         data_list: Iterable[pl.DataFrame],
         llm_analysis_function: Callable[[int, pl.DataFrame], ProcessorOutput],
@@ -70,7 +102,6 @@ def multi_thread_llm(
             daemon=True
         )
         threads.append(thread)
-        llm_logger.info("processing data %d", i)
         thread.start()
 
     timeout_sec = min(max_data_size * max_sec_per_record, max_timeout)
@@ -103,7 +134,14 @@ def multi_thread_llm(
     )
 
 
-def llm_processor(llm_context: LLMChainContext, input_columns: list[str], output_column_name_suffix: str = "") -> Callable[[int, pl.DataFrame], ProcessorOutput]:
+def llm_processor(
+        llm_context: LLMChainContext,
+        input_columns: list[str],
+        output_column_name_suffix: str = "",
+        progress_display: ProgressDisplay = ProgressDisplay.NONE,
+        aggregate: AggregateProgress | None = None,
+    ) -> Callable[[int, pl.DataFrame], ProcessorOutput]:
+    record_hook: Callable[[int], Any] | None = aggregate.record_done if aggregate is not None else None
 
     def info_extractor(
             idx: int,
@@ -127,24 +165,40 @@ def llm_processor(llm_context: LLMChainContext, input_columns: list[str], output
             data_index=idx
         )
 
-        processed = llm_processors.get_results(
-            {
-                f"{f}{output_column_name_suffix}": simple_data_extractor(f)
-                for f in llm_context.output_schema.model_fields.keys()
-            }
+        # A per-chunk bar can only be built here, where the chunk's size is known.
+        chunk_bar = (
+            tqdm(total=len(input_data), desc=f"data {idx}", unit="record", position=idx - 1)
+            if progress_display is ProgressDisplay.PER_THREAD
+            else None
         )
+        try:
+            processed = llm_processors.get_results(
+                {
+                    f"{f}{output_column_name_suffix}": simple_data_extractor(f)
+                    for f in llm_context.output_schema.model_fields
+                },
+                progress_hook=chunk_bar.update if chunk_bar is not None else record_hook,
+            )
+        finally:
+            if chunk_bar is not None:
+                chunk_bar.close()
 
-        llm_context.logger.info("data %d has been processed successfully", idx)
+        # Only reached when the chunk finished; a raising chunk stays uncounted,
+        # so the postfix keeps showing it as outstanding.
+        if aggregate is not None:
+            aggregate.chunk_done()
         return processed
     return info_extractor
 
 def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -> ProcessorOutput:
     data_size = len(input_data)
     thread_chunk_size, thread_count = get_thread_parameters(data_size)
+    # `thread_chunk_size` floors, so any remainder spills into one extra chunk.
+    chunk_count = thread_count + 1 if data_size > thread_chunk_size * thread_count else thread_count
     llm_context.logger.info(
         "Total %d records are split into %d chunks, each chunk contain maximum %d records.",
         data_size,
-        thread_count + 1 if data_size > thread_chunk_size * thread_count else thread_count,
+        chunk_count,
         thread_chunk_size
     )
 
@@ -154,14 +208,31 @@ def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -
         if field is not None and field != "format_instructions"
     ]
 
-    start = time.perf_counter()
-    results = multi_thread_llm(
-        input_data.iter_slices(thread_chunk_size),
-        llm_processor(llm_context, input_columns, llm_context.output_column_name_suffix),
-        max_sec_per_record=llm_context.max_seconds_per_record,
-        max_timeout=llm_context.max_job_timeout,
-        llm_logger=llm_context.logger
+    progress_display = llm_context.progress_display
+    aggregate = (
+        AggregateProgress(data_size, chunk_count)
+        if progress_display is ProgressDisplay.AGGREGATE
+        else None
     )
+
+    start = time.perf_counter()
+    try:
+        results = multi_thread_llm(
+            input_data.iter_slices(thread_chunk_size),
+            llm_processor(
+                llm_context,
+                input_columns,
+                llm_context.output_column_name_suffix,
+                progress_display=progress_display,
+                aggregate=aggregate,
+            ),
+            max_sec_per_record=llm_context.max_seconds_per_record,
+            max_timeout=llm_context.max_job_timeout,
+            llm_logger=llm_context.logger
+        )
+    finally:
+        if aggregate is not None:
+            aggregate.close()
     llm_context.logger.info(
         "%d records are processed in %s",
         data_size,

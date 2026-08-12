@@ -10,7 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableSequence
 from pydantic import BaseModel
 
-from .processors import ChatClient, LLMChainBuilder
+from .processors import ChatClient, LLMChainBuilder, ProgressDisplay
 from .utils import get_secret
 
 
@@ -91,6 +91,7 @@ class LLMChainContext:
     max_job_timeout: int = 72000 # maximum 20 hours
     extra_context: dict[int, Callable] = field(default_factory=dict)
     output_column_name_suffix: str = ""
+    progress_display: ProgressDisplay = ProgressDisplay.NONE
 
 def simple_data_extractor(field_name: str) -> Callable:
     return lambda raw_output: getattr(raw_output, field_name)

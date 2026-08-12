@@ -19,6 +19,7 @@ dependencies = [
     "pyarrow",
     "tzdata",
     "pydantic-settings>=2.14.2",
+    "tqdm>=4.66",
 ]
 
 [build-system]
