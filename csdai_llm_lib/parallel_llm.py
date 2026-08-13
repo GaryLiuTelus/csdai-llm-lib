@@ -2,12 +2,14 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from string import Formatter
 from threading import Lock, Thread
 from typing import Any
 
 import polars as pl
 from tqdm.auto import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .base_env import get_base_settings
 from .chains import LLMChainContext, simple_data_extractor
@@ -71,6 +73,68 @@ class AggregateProgress:
 
     def close(self) -> None:
         self._bar.close()
+
+
+class PerThreadProgress:
+    """One live bar per data chunk, plus a summary block printed when the job ends.
+
+    Bars are built with `leave=False` and their final frame is reprinted by hand,
+    because tqdm cannot both keep a positioned bar on screen and clean up after
+    it. `close()` with `leave=True` renders the frame at `pos=0` — the anchor
+    line, not the bar's own line — then scrolls one line, and never erases the
+    line the bar had been painting. Closing chunk bars as their workers finish
+    therefore strands the last in-progress frame of every bar still running:
+    nothing repaints those lines, so later log records land on them from column 0
+    with no erase-to-end-of-line and the tail of the stale bar survives to the
+    right of the message.
+
+    `leave=False` takes the branch that does erase, so a finishing chunk hands its
+    line back cleanly. `finish()` snapshots the frame first — tqdm recomputes
+    `elapsed` on every render, so a frame captured later would report the whole
+    job's runtime instead of that chunk's — and `close()` writes the snapshots out
+    in data-index order, filling the lines the bars just vacated.
+    """
+
+    def __init__(self) -> None:
+        self._bars: dict[int, tqdm] = {}
+        self._summaries: dict[int, str] = {}
+        # Workers register and finish bars; the main thread drains both dicts.
+        self._lock = Lock()
+
+    def bar(self, idx: int, total: int) -> tqdm:
+        # A per-chunk bar can only be built where the chunk's size is known.
+        chunk_bar = tqdm(
+            total=total, desc=f"data {idx:0>2}", unit="record", position=idx - 1, leave=False
+        )
+        with self._lock:
+            self._bars[idx] = chunk_bar
+        return chunk_bar
+
+    def finish(self, idx: int) -> None:
+        """Freeze one chunk's final frame and give its screen line back."""
+        with self._lock:
+            chunk_bar = self._bars.pop(idx, None)
+            if chunk_bar is None:
+                return
+            self._summaries[idx] = str(chunk_bar)
+        chunk_bar.close()
+
+    def close(self) -> None:
+        with self._lock:
+            # Anything still open timed out; snapshot it where it stopped.
+            leftover = sorted(self._bars.items())
+            for idx, chunk_bar in leftover:
+                self._summaries[idx] = str(chunk_bar)
+            self._bars.clear()
+            summaries = [self._summaries[idx] for idx in sorted(self._summaries)]
+            self._summaries.clear()
+        for _, chunk_bar in leftover:
+            chunk_bar.close()
+        if summaries:
+            # Erasing a positioned bar leaves the cursor part-way along the line
+            # the `position=0` bar vacated (tqdm only rewinds for `pos == 0`), so
+            # the block starts with `\r` to reclaim that line from column 0.
+            tqdm.write("\r" + "\n".join(summaries))
 
 
 def multi_thread_llm(
@@ -138,8 +202,8 @@ def llm_processor(
         llm_context: LLMChainContext,
         input_columns: list[str],
         output_column_name_suffix: str = "",
-        progress_display: ProgressDisplay = ProgressDisplay.NONE,
         aggregate: AggregateProgress | None = None,
+        per_thread: PerThreadProgress | None = None,
     ) -> Callable[[int, pl.DataFrame], ProcessorOutput]:
     record_hook: Callable[[int], Any] | None = aggregate.record_done if aggregate is not None else None
 
@@ -165,12 +229,7 @@ def llm_processor(
             data_index=idx
         )
 
-        # A per-chunk bar can only be built here, where the chunk's size is known.
-        chunk_bar = (
-            tqdm(total=len(input_data), desc=f"data {idx}", unit="record", position=idx - 1)
-            if progress_display is ProgressDisplay.PER_THREAD
-            else None
-        )
+        chunk_bar = per_thread.bar(idx, len(input_data)) if per_thread is not None else None
         try:
             processed = llm_processors.get_results(
                 {
@@ -180,8 +239,10 @@ def llm_processor(
                 progress_hook=chunk_bar.update if chunk_bar is not None else record_hook,
             )
         finally:
-            if chunk_bar is not None:
-                chunk_bar.close()
+            # Frees the bar's line; the frame it snapshots is replayed in the
+            # summary block that `PerThreadProgress.close()` prints.
+            if per_thread is not None:
+                per_thread.finish(idx)
 
         # Only reached when the chunk finished; a raising chunk stays uncounted,
         # so the postfix keeps showing it as outstanding.
@@ -214,25 +275,37 @@ def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -
         if progress_display is ProgressDisplay.AGGREGATE
         else None
     )
+    per_thread = PerThreadProgress() if progress_display is ProgressDisplay.PER_THREAD else None
+    # Bars write to stderr, the logger's console handler to stdout, and neither
+    # knows the other's cursor state. Routing records through `tqdm.write()`
+    # clears the bars, prints, then redraws them.
+    log_redirect = (
+        logging_redirect_tqdm(loggers=[llm_context.logger], tqdm_class=tqdm)
+        if aggregate is not None or per_thread is not None
+        else nullcontext()
+    )
 
     start = time.perf_counter()
-    try:
-        results = multi_thread_llm(
-            input_data.iter_slices(thread_chunk_size),
-            llm_processor(
-                llm_context,
-                input_columns,
-                llm_context.output_column_name_suffix,
-                progress_display=progress_display,
-                aggregate=aggregate,
-            ),
-            max_sec_per_record=llm_context.max_seconds_per_record,
-            max_timeout=llm_context.max_job_timeout,
-            llm_logger=llm_context.logger
-        )
-    finally:
-        if aggregate is not None:
-            aggregate.close()
+    with log_redirect:
+        try:
+            results = multi_thread_llm(
+                input_data.iter_slices(thread_chunk_size),
+                llm_processor(
+                    llm_context,
+                    input_columns,
+                    llm_context.output_column_name_suffix,
+                    aggregate=aggregate,
+                    per_thread=per_thread,
+                ),
+                max_sec_per_record=llm_context.max_seconds_per_record,
+                max_timeout=llm_context.max_job_timeout,
+                llm_logger=llm_context.logger
+            )
+        finally:
+            if aggregate is not None:
+                aggregate.close()
+            if per_thread is not None:
+                per_thread.close()
     llm_context.logger.info(
         "%d records are processed in %s",
         data_size,

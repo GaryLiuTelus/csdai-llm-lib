@@ -139,20 +139,22 @@ def data_processing_timer(logger: logging.Logger | None = None) -> Callable[[Dat
             start = time.time()
             output_data = func(input_data, *args, **kwargs)
             if logger is not None:
+                elapsed_time = time.time() - start
                 logger.info(
                         """Data has been processed successfully by LLM.
-    total %d records
-    %d has defects
-    %d failed parsing
-    early_terminated: (%s)
-    output %d
-    takes %s""",
+        total %d records
+        %d has defects
+        %d failed parsing
+        early_terminated: (%s)
+        output %d
+        takes %s (%.2f s/records)""",
                         len(input_data),
                         len(output_data.defects),
                         len(output_data.failed),
                         "None" if len(output_data.early_terminated) == 0 else ", ".join([f"terminate step: {step}, {len(d)} records" for step, d in output_data.early_terminated.items()]),
                         len(output_data.completed),
-                        readable_time(time.time() - start)
+                        readable_time(elapsed_time),
+                        elapsed_time/len(input_data)
                     )
             return output_data
         return decorated
