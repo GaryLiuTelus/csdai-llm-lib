@@ -124,14 +124,27 @@ def readable_time(tot_seconds: float) -> str:
     hours, remaining = divmod(tot_seconds, 3600)
     minutes, seconds = divmod(remaining, 60)
 
-    result = ""
+    result = []
+
     if hours > 0:
-        result += f"{hours:.0f} hour(s)"
+        result.append(f"{hours:.0f}")
+
     if minutes > 0:
-        result += f" {minutes:.0f} minute(s)"
+        result.append(f"{minutes:.0f}")
+
     if seconds > 0:
-        result += f" {seconds:.2f} second(s)"
-    return result.strip()
+        result.append(f"{seconds:.2f}")
+
+    return ":".join(result)
+
+    # result = ""
+    # if hours > 0:
+    #     result += f"{hours:.0f} hour(s)"
+    # if minutes > 0:
+    #     result += f" {minutes:.0f} minute(s)"
+    # if seconds > 0:
+    #     result += f" {seconds:.2f} second(s)"
+    # return result.strip()
 def data_processing_timer(logger: logging.Logger | None = None) -> Callable[[DataProcessor[P]], DataProcessor[P]]:
     def func_wrapper(func: DataProcessor[P]) -> DataProcessor[P]:
         @wraps(func)
