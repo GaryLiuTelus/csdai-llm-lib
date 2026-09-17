@@ -102,7 +102,10 @@ class DataframeLLMAnalyzer:
                         llm_output = None
                         break
                     except retryable_errors as e:
-                        self.llm_logger.error("Retries exhausted at step %d (data %d, record %d): %s", i, self.data_index, idx, e)
+                        self.llm_logger.error(
+                            "Retries exhausted at step %d (data %d, record %d): %s: %s (cause: %r)",
+                            i, self.data_index, idx, type(e).__name__, e, e.__cause__,
+                        )
                         llm_output = None
                         break
                     invoke_input = llm_output
