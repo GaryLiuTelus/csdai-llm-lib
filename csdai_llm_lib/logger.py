@@ -7,12 +7,9 @@ from google.cloud.logging import Client as CloudLoggingClient
 from google.cloud.logging import handlers as gcp_logging_handlers
 from httplib2 import Http
 
-from .base_env import get_base_settings
-
 
 class GoogleChatLoggingHandler(logging.Handler):
-
-    def __init__(self, chat_webhook:str, level: int = 0) -> None:
+    def __init__(self, chat_webhook: str, level: int = 0) -> None:
         super().__init__(level)
         self.__webhook_url = chat_webhook
         self.__http = Http()
@@ -23,16 +20,17 @@ class GoogleChatLoggingHandler(logging.Handler):
                 uri=self.__webhook_url,
                 method="POST",
                 headers={"Content-Type": "application/json; charset=UTF-8"},
-                body=dumps({"text": self.format(record)})
+                body=dumps({"text": self.format(record)}),
             )
         except Exception:  # noqa: BLE001
             self.handleError(record)
+
+
 @dataclass
 class LLMLogger:
     logger_name: str = "llm_chain"
     level: str = "debug"
     job_id: str = "test"
-
 
     def __post_init__(self):
         self.__log_level_mapping = {
@@ -40,7 +38,7 @@ class LLMLogger:
             "info": logging.INFO,
             "warning": logging.WARNING,
             "error": logging.ERROR,
-            "critical": logging.CRITICAL
+            "critical": logging.CRITICAL,
         }
         self._logger = logging.getLogger(self.logger_name)
         for h in list(self._logger.handlers):
@@ -48,10 +46,13 @@ class LLMLogger:
         self._logger.setLevel(self.logging_level)
         self._logger.propagate = False
         self._default_format = logging.Formatter(
-            fmt="%(levelname)8s - %(asctime)s:" + self.logger_name.upper() + \
-                " (job_id: " + self.job_id + "), %(filename)s " + \
-                ":: %(funcName)s, line %(lineno)04d `%(message)s`",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            fmt="%(levelname)8s - %(asctime)s:"
+            + self.logger_name.upper()
+            + " (job_id: "
+            + self.job_id
+            + "), %(filename)s "
+            + ":: %(funcName)s, line %(lineno)04d `%(message)s`",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(self._default_format)
@@ -64,19 +65,20 @@ class LLMLogger:
 
     @logging_format.setter
     def logging_format(self, new_format: str, **kwargs):
-        self._default_format = logging.Formatter(
-            fmt=new_format,
-            **kwargs
-        )
+        self._default_format = logging.Formatter(fmt=new_format, **kwargs)
 
     @property
     def logging_level(self) -> int:
         return self.__log_level_mapping.get(self.level, logging.DEBUG)
 
-    def logger(self, chat_webhook: str | None = None, cloud_logging_project_id: str | None = None) -> logging.Logger:
+    def logger(
+        self,
+        chat_webhook: str | None = None,
+        cloud_logging_project_id: str | None = None,
+    ) -> logging.Logger:
 
         if chat_webhook is not None:
-            for handler in self._logger.handlers:
+            for handler in list(self._logger.handlers):
                 if isinstance(handler, GoogleChatLoggingHandler):
                     self._logger.removeHandler(handler)
 
@@ -85,10 +87,12 @@ class LLMLogger:
             chat_handler.setLevel(logging.ERROR)
             self._logger.addHandler(chat_handler)
         if cloud_logging_project_id is not None:
-            for handler in self._logger.handlers:
+            for handler in list(self._logger.handlers):
                 if isinstance(handler, gcp_logging_handlers.CloudLoggingHandler):
                     self._logger.removeHandler(handler)
-            cloud_handler = gcp_logging_handlers.CloudLoggingHandler(CloudLoggingClient(project=get_base_settings().project_id))
+            cloud_handler = gcp_logging_handlers.CloudLoggingHandler(
+                CloudLoggingClient(project=cloud_logging_project_id)
+            )
             cloud_handler.setFormatter(self._default_format)
             cloud_handler.setLevel(logging.DEBUG)
             self._logger.addHandler(cloud_handler)

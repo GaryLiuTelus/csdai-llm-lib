@@ -8,7 +8,7 @@ from threading import Lock, Thread
 from typing import Any
 
 import polars as pl
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .base_env import get_base_settings
@@ -26,7 +26,9 @@ def assembly_dataframe(dataframes: list[pl.DataFrame]) -> pl.DataFrame:
             continue
         for col, dtype in df.schema.items():
             existing_dtype = expected_types.get(col)
-            if existing_dtype is None or ("null" in str(existing_dtype).lower() and existing_dtype != dtype):
+            if existing_dtype is None or (
+                "null" in str(existing_dtype).lower() and existing_dtype != dtype
+            ):
                 expected_types[col] = dtype
 
     if len(expected_types) == 0:
@@ -44,6 +46,7 @@ def assembly_dataframe(dataframes: list[pl.DataFrame]) -> pl.DataFrame:
         if len(df) > 0
     )
     return result
+
 
 class AggregateProgress:
     """One bar for the whole job: records drive the bar, chunks drive the postfix.
@@ -69,7 +72,9 @@ class AggregateProgress:
             self._render()
 
     def _render(self) -> None:
-        self._bar.set_postfix_str(f"{self._done_chunks}/{self._total_chunks} threads done", refresh=True)
+        self._bar.set_postfix_str(
+            f"{self._done_chunks}/{self._total_chunks} threads done", refresh=True
+        )
 
     def close(self) -> None:
         self._bar.close()
@@ -104,7 +109,11 @@ class PerThreadProgress:
     def bar(self, idx: int, total: int) -> tqdm:
         # A per-chunk bar can only be built where the chunk's size is known.
         chunk_bar = tqdm(
-            total=total, desc=f"data {idx:0>2}", unit="record", position=idx - 1, leave=False
+            total=total,
+            desc=f"data {idx:0>2}",
+            unit="record",
+            position=idx - 1,
+            leave=False,
         )
         with self._lock:
             self._bars[idx] = chunk_bar
@@ -138,19 +147,19 @@ class PerThreadProgress:
 
 
 def multi_thread_llm(
-        data_list: Iterable[pl.DataFrame],
-        llm_analysis_function: Callable[[int, pl.DataFrame], ProcessorOutput],
-        llm_logger: logging.Logger,
-        max_sec_per_record: int = 20,
-        max_timeout: int = 72000 # no more than 20 hours
-    ) -> ProcessorOutput:
+    data_list: Iterable[pl.DataFrame],
+    llm_analysis_function: Callable[[int, pl.DataFrame], ProcessorOutput],
+    llm_logger: logging.Logger,
+    max_sec_per_record: int = 20,
+    max_timeout: int = 72000,  # no more than 20 hours
+) -> ProcessorOutput:
 
     def wrapper_func(
-            func: Callable[[int, pl.DataFrame], ProcessorOutput],
-            data: pl.DataFrame,
-            idx: int,
-            return_dict: dict
-        ) -> None:
+        func: Callable[[int, pl.DataFrame], ProcessorOutput],
+        data: pl.DataFrame,
+        idx: int,
+        return_dict: dict,
+    ) -> None:
         result = func(idx, data)
         return_dict[idx] = result
 
@@ -163,7 +172,7 @@ def multi_thread_llm(
         thread = Thread(
             target=wrapper_func,
             args=(llm_analysis_function, data, i, return_dict),
-            daemon=True
+            daemon=True,
         )
         threads.append(thread)
         thread.start()
@@ -176,7 +185,11 @@ def multi_thread_llm(
         remaining = max(0.0, deadline - time.time())
         thread.join(timeout=remaining)
         if thread.is_alive():
-            llm_logger.error("Thread %d did not finish within timeout (%d seconds), skipping", i, timeout_sec)
+            llm_logger.error(
+                "Thread %d did not finish within timeout (%d seconds), skipping",
+                i,
+                timeout_sec,
+            )
 
     processed_data = list(return_dict.values())
     if len(processed_data) == 0:
@@ -194,31 +207,32 @@ def multi_thread_llm(
         assembly_dataframe(completed),
         assembly_dataframe(defects),
         assembly_dataframe(failed),
-        {s: assembly_dataframe(d) for s, d in early_terminated.items()}
+        {s: assembly_dataframe(d) for s, d in early_terminated.items()},
     )
 
 
 def llm_processor(
-        llm_context: LLMChainContext,
-        input_columns: list[str],
-        output_column_name_suffix: str = "",
-        aggregate: AggregateProgress | None = None,
-        per_thread: PerThreadProgress | None = None,
-    ) -> Callable[[int, pl.DataFrame], ProcessorOutput]:
-    record_hook: Callable[[int], Any] | None = aggregate.record_done if aggregate is not None else None
+    llm_context: LLMChainContext,
+    input_columns: list[str],
+    output_column_name_suffix: str = "",
+    aggregate: AggregateProgress | None = None,
+    per_thread: PerThreadProgress | None = None,
+) -> Callable[[int, pl.DataFrame], ProcessorOutput]:
+    record_hook: Callable[[int], Any] | None = (
+        aggregate.record_done if aggregate is not None else None
+    )
 
     def info_extractor(
-            idx: int,
-            input_data: pl.DataFrame,
-        ) -> ProcessorOutput:
+        idx: int,
+        input_data: pl.DataFrame,
+    ) -> ProcessorOutput:
         settings = get_base_settings()
         sales_opp_analyzer = llm_context.llm_chain(
             llm_base_url=settings.llm_base_url,
             llm_api_key_secret_name=settings.llm_api_key_secret_name,
             llm_model_name=llm_context.default_model_name,
-            secret_project=settings.project_id
+            secret_project=settings.project_id,
         )
-
 
         llm_processors = DataframeLLMAnalyzer(
             input_data,
@@ -226,17 +240,21 @@ def llm_processor(
             input_columns=input_columns,
             llm_logger=llm_context.logger,
             extra_context=llm_context.extra_context,
-            data_index=idx
+            data_index=idx,
         )
 
-        chunk_bar = per_thread.bar(idx, len(input_data)) if per_thread is not None else None
+        chunk_bar = (
+            per_thread.bar(idx, len(input_data)) if per_thread is not None else None
+        )
         try:
             processed = llm_processors.get_results(
                 {
                     f"{f}{output_column_name_suffix}": simple_data_extractor(f)
                     for f in llm_context.output_schema.model_fields
                 },
-                progress_hook=chunk_bar.update if chunk_bar is not None else record_hook,
+                progress_hook=chunk_bar.update
+                if chunk_bar is not None
+                else record_hook,
             )
         finally:
             # Frees the bar's line; the frame it snapshots is replayed in the
@@ -249,18 +267,26 @@ def llm_processor(
         if aggregate is not None:
             aggregate.chunk_done()
         return processed
+
     return info_extractor
 
-def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -> ProcessorOutput:
+
+def llm_job_assignment(
+    input_data: pl.DataFrame, llm_context: LLMChainContext
+) -> ProcessorOutput:
     data_size = len(input_data)
     thread_chunk_size, thread_count = get_thread_parameters(data_size)
     # `thread_chunk_size` floors, so any remainder spills into one extra chunk.
-    chunk_count = thread_count + 1 if data_size > thread_chunk_size * thread_count else thread_count
+    chunk_count = (
+        thread_count + 1
+        if data_size > thread_chunk_size * thread_count
+        else thread_count
+    )
     llm_context.logger.info(
         "Total %d records are split into %d chunks, each chunk contain maximum %d records.",
         data_size,
         chunk_count,
-        thread_chunk_size
+        thread_chunk_size,
     )
 
     input_columns = [
@@ -275,7 +301,9 @@ def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -
         if progress_display is ProgressDisplay.AGGREGATE
         else None
     )
-    per_thread = PerThreadProgress() if progress_display is ProgressDisplay.PER_THREAD else None
+    per_thread = (
+        PerThreadProgress() if progress_display is ProgressDisplay.PER_THREAD else None
+    )
     # Bars write to stderr, the logger's console handler to stdout, and neither
     # knows the other's cursor state. Routing records through `tqdm.write()`
     # clears the bars, prints, then redraws them.
@@ -299,7 +327,7 @@ def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -
                 ),
                 max_sec_per_record=llm_context.max_seconds_per_record,
                 max_timeout=llm_context.max_job_timeout,
-                llm_logger=llm_context.logger
+                llm_logger=llm_context.logger,
             )
         finally:
             if aggregate is not None:
@@ -309,7 +337,6 @@ def llm_job_assignment(input_data: pl.DataFrame, llm_context: LLMChainContext) -
     llm_context.logger.info(
         "%d records are processed in %s",
         data_size,
-        readable_time(time.perf_counter() - start)
+        readable_time(time.perf_counter() - start),
     )
     return results
-
