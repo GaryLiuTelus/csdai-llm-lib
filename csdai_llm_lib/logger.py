@@ -1,5 +1,7 @@
+import io
 import logging
 import sys
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from json import dumps
 
@@ -106,11 +108,21 @@ class LLMLogger:
         interpreter exits before that thread drains its queue, google-cloud-logging
         warns that entries may be lost. Calling this before the program ends
         flushes and closes the handlers deterministically.
+
+        On shutdown the handler prints progress lines ("Waiting up to 5
+        seconds.", "Sent all pending logs.") to stderr, which Cloud Batch
+        records as ERROR. They are swallowed here; only a genuine
+        "Failed to send ..." line is passed on to stderr.
         """
-        for handler in list(self._logger.handlers):
-            try:
-                handler.flush()
-                handler.close()
-            except Exception:  # noqa: BLE001, S110
-                pass
-            self._logger.removeHandler(handler)
+        captured = io.StringIO()
+        with redirect_stderr(captured):
+            for handler in list(self._logger.handlers):
+                try:
+                    handler.flush()
+                    handler.close()
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                self._logger.removeHandler(handler)
+        for line in captured.getvalue().splitlines():
+            if "Failed to send" in line:
+                print(line, file=sys.stderr)
