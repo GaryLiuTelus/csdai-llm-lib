@@ -103,13 +103,14 @@ class LLMChainContext:
     init_prompt_template: str
     default_model_name: str
     logger: logging.Logger
-    max_seconds_per_record: int = 20
     max_job_timeout: int = 72000 # maximum 20 hours
     extra_context: dict[int, Callable] = field(default_factory=dict)
     output_column_name_suffix: str = ""
     progress_display: ProgressDisplay = ProgressDisplay.NONE
-    record_timeout_seconds: float | None = None
-    """Hard cap on one record across all its steps; `None` disables it."""
+    record_timeout_seconds: float = 120
+    """Hard cap in seconds on one record across all its steps. A record that
+    overruns is failed on its own; a chunk's total budget is this value times
+    the chunk size."""
 
 def simple_data_extractor(field_name: str) -> Callable:
     return lambda raw_output: getattr(raw_output, field_name)

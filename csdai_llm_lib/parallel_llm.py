@@ -154,7 +154,7 @@ def multi_thread_llm(
     data_list: Iterable[pl.DataFrame],
     llm_analysis_function: Callable[[int, pl.DataFrame], ProcessorOutput],
     llm_logger: logging.Logger,
-    max_sec_per_record: int = 20,
+    record_timeout: float = 120,
     max_timeout: int = 72000,  # no more than 20 hours
 ) -> ProcessorOutput:
 
@@ -189,7 +189,7 @@ def multi_thread_llm(
         threads.append(thread)
         thread.start()
 
-    timeout_sec = min(max_data_size * max_sec_per_record, max_timeout)
+    timeout_sec = min(max_data_size * record_timeout, max_timeout)
 
     deadline = time.time() + timeout_sec
 
@@ -358,11 +358,7 @@ def llm_job_assignment(
                     per_thread=per_thread,
                     llm_api_key=llm_api_key,
                 ),
-                # A chunk's budget must cover records that run up to their own cap.
-                max_sec_per_record=max(
-                    llm_context.max_seconds_per_record,
-                    llm_context.record_timeout_seconds or 0,
-                ),
+                record_timeout=llm_context.record_timeout_seconds,
                 max_timeout=llm_context.max_job_timeout,
                 llm_logger=llm_context.logger,
             )
