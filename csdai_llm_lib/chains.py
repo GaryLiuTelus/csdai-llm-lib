@@ -1,5 +1,5 @@
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -10,7 +10,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableSequence
 from pydantic import BaseModel
 
-from .processors import ChatClient, LLMChainBuilder, ProgressDisplay
+from .processors import (
+    ChatClient,
+    LLMChainBuilder,
+    ProgressDisplay,
+    require_step_names,
+)
 from .utils import get_secret
 
 
@@ -27,23 +32,26 @@ class NoneHandlingPydanticOutputParser(PydanticOutputParser):
         except OutputParserException:
             return None
 
-class LLMChain:
+class LLMChain(ABC):
     def __init__(
             self,
             llm_base_url: str,
             llm_api_key_secret_name: str,
             llm_model_name: str,
-            secret_project: str
+            secret_project: str,
+            llm_api_key: str | None = None
         ) -> None:
+        """`llm_api_key`, when given, is used as-is instead of reading the secret."""
         self._llm_base_url = llm_base_url
         self._llm_api_key_secret_name = llm_api_key_secret_name
         self._llm_model_name = llm_model_name
         self._secret_project = secret_project
+        self._llm_api_key = llm_api_key
 
     def create_client(self, model_name: str) -> ChatClient:
         return ChatClient(
                 base_url=self._llm_base_url,
-                api_key=get_secret(
+                api_key=self._llm_api_key or get_secret(
                     self._llm_api_key_secret_name,
                     project=self._secret_project
                 ),
@@ -54,8 +62,11 @@ class LLMChain:
             self, system_message: str,
             prompt_template: str,
             pydantic_obj: type[BaseModel],
-            model_name: str = ""
+            model_name: str = "",
+            *,
+            name: str,
         ) -> RunnableSequence:
+        """Build `prompt | structured llm`; steps are named `<name>_prompt` / `<name>_llm`."""
 
         if model_name != "":
             chat_client = self.create_client(model_name)
@@ -71,14 +82,19 @@ class LLMChain:
                     prompt_template
                 ]
                 )
-        llm_chain.add_runnable(llm_prompt)
-        llm_chain.add_runnable(json_extractor)
+        llm_chain.add_runnable(llm_prompt, f"{name}_prompt")
+        llm_chain.add_runnable(json_extractor, f"{name}_llm")
         return llm_chain.chain
 
-    @property
     @abstractmethod
+    def _build_chains(self) -> Runnable:
+        """Assemble the full chain; every step must be named."""
+
+    @property
     def full_chains(self) -> Runnable:
-        ...
+        chain = self._build_chains()
+        require_step_names(chain)
+        return chain
 
 @dataclass
 class LLMChainContext:
@@ -92,6 +108,8 @@ class LLMChainContext:
     extra_context: dict[int, Callable] = field(default_factory=dict)
     output_column_name_suffix: str = ""
     progress_display: ProgressDisplay = ProgressDisplay.NONE
+    record_timeout_seconds: float | None = None
+    """Hard cap on one record across all its steps; `None` disables it."""
 
 def simple_data_extractor(field_name: str) -> Callable:
     return lambda raw_output: getattr(raw_output, field_name)

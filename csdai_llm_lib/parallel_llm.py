@@ -14,7 +14,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from .base_env import get_base_settings
 from .chains import LLMChainContext, simple_data_extractor
 from .processors import DataframeLLMAnalyzer, ProcessorOutput, ProgressDisplay
-from .utils import get_thread_parameters, readable_time
+from .utils import get_secret, get_thread_parameters, readable_time
 
 
 def assembly_dataframe(dataframes: list[pl.DataFrame]) -> pl.DataFrame:
@@ -146,6 +146,10 @@ class PerThreadProgress:
             tqdm.write("\r" + "\n".join(summaries))
 
 
+def _failed_output(data: pl.DataFrame) -> ProcessorOutput:
+    return ProcessorOutput(pl.DataFrame(), pl.DataFrame(), data, {})
+
+
 def multi_thread_llm(
     data_list: Iterable[pl.DataFrame],
     llm_analysis_function: Callable[[int, pl.DataFrame], ProcessorOutput],
@@ -160,14 +164,22 @@ def multi_thread_llm(
         idx: int,
         return_dict: dict,
     ) -> None:
-        result = func(idx, data)
+        try:
+            result = func(idx, data)
+        except Exception:
+            # Without this the thread dies silently and its chunk vanishes
+            # from every count; surface it as failed records instead.
+            llm_logger.exception("Chunk %d failed with %d record(s)", idx, len(data))
+            result = _failed_output(data)
         return_dict[idx] = result
 
     max_data_size = 0
     return_dict: dict[int, ProcessorOutput] = {}
+    chunks: dict[int, pl.DataFrame] = {}
     threads: list[Thread] = []
 
     for i, data in enumerate(data_list, start=1):
+        chunks[i] = data
         max_data_size = max(max_data_size, len(data))
         thread = Thread(
             target=wrapper_func,
@@ -191,7 +203,17 @@ def multi_thread_llm(
                 timeout_sec,
             )
 
-    processed_data = list(return_dict.values())
+    # Snapshot, so a straggler finishing now cannot be counted twice.
+    finished = dict(return_dict)
+    for i, data in chunks.items():
+        if i not in finished:
+            llm_logger.error(
+                "Chunk %d produced no result; marking its %d record(s) as failed",
+                i,
+                len(data),
+            )
+            finished[i] = _failed_output(data)
+    processed_data = list(finished.values())
     if len(processed_data) == 0:
         return ProcessorOutput(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {})
     completed, defects, failed = [], [], []
@@ -217,6 +239,7 @@ def llm_processor(
     output_column_name_suffix: str = "",
     aggregate: AggregateProgress | None = None,
     per_thread: PerThreadProgress | None = None,
+    llm_api_key: str | None = None,
 ) -> Callable[[int, pl.DataFrame], ProcessorOutput]:
     record_hook: Callable[[int], Any] | None = (
         aggregate.record_done if aggregate is not None else None
@@ -232,6 +255,7 @@ def llm_processor(
             llm_api_key_secret_name=settings.llm_api_key_secret_name,
             llm_model_name=llm_context.default_model_name,
             secret_project=settings.project_id,
+            llm_api_key=llm_api_key,
         )
 
         llm_processors = DataframeLLMAnalyzer(
@@ -241,6 +265,7 @@ def llm_processor(
             llm_logger=llm_context.logger,
             extra_context=llm_context.extra_context,
             data_index=idx,
+            record_timeout=llm_context.record_timeout_seconds,
         )
 
         chunk_bar = (
@@ -313,6 +338,13 @@ def llm_job_assignment(
         else nullcontext()
     )
 
+    # Fetch the key once here: every chunk thread would otherwise hit Secret
+    # Manager at the same moment, and a deadline error there kills the chunk.
+    base_settings = get_base_settings()
+    llm_api_key = get_secret(
+        base_settings.llm_api_key_secret_name, project=base_settings.project_id
+    )
+
     start = time.perf_counter()
     with log_redirect:
         try:
@@ -324,8 +356,13 @@ def llm_job_assignment(
                     llm_context.output_column_name_suffix,
                     aggregate=aggregate,
                     per_thread=per_thread,
+                    llm_api_key=llm_api_key,
                 ),
-                max_sec_per_record=llm_context.max_seconds_per_record,
+                # A chunk's budget must cover records that run up to their own cap.
+                max_sec_per_record=max(
+                    llm_context.max_seconds_per_record,
+                    llm_context.record_timeout_seconds or 0,
+                ),
                 max_timeout=llm_context.max_job_timeout,
                 llm_logger=llm_context.logger,
             )

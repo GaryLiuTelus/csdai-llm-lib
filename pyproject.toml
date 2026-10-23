@@ -1,6 +1,6 @@
 [project]
 name = "csdai-llm-lib"
-version = "1.0.1"
+version = "1.10.0"
 description = "CSD AI team LLM library"
 readme = "README.md"
 requires-python = ">=3.11"
