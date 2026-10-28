@@ -3,7 +3,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import reduce
 from typing import Any, cast
@@ -142,6 +142,8 @@ class ProcessorOutput:
     defects: pl.DataFrame
     failed: pl.DataFrame
     early_terminated: dict[int, pl.DataFrame]
+    early_terminated_names: dict[int, str] = field(default_factory=dict)
+    """Chain step name of each `early_terminated` key (the step the record was skipped before)."""
 @dataclass
 class DataframeLLMAnalyzer:
     data: pl.DataFrame
@@ -194,11 +196,6 @@ class DataframeLLMAnalyzer:
                             invoke_input = additional_context_func(row, invoke_input, llm_output or [])
                         if invoke_input is None:
                             skipped_step = i
-                            self.llm_logger.debug(
-                                "Skipped before step %d [%s] (data %d, record %d): extra_context returned None (previous output: %s)",
-                                i, step_name(c), self.data_index, idx,
-                                f"{len(llm_output)} item(s)" if isinstance(llm_output, list) else type(llm_output).__name__,
-                            )
                             break
                         llm_output = invoke_with_timeout(
                             c,
@@ -271,11 +268,6 @@ class DataframeLLMAnalyzer:
             if isinstance(self.llm_chain, RunnableSequence)
             else {1: step_name(self.llm_chain)}
         )
-        for skipped_at, skipped_rows in skipped_data.items():
-            self.llm_logger.info(
-                "data %d: %d record(s) ended early before step %d [%s]",
-                self.data_index, len(skipped_rows), skipped_at, step_labels.get(skipped_at, "?"),
-            )
         return ProcessorOutput(
             pl.DataFrame(llm_completed),
             pl.DataFrame(input_defects),
@@ -283,7 +275,8 @@ class DataframeLLMAnalyzer:
             {
                 step: pl.DataFrame(early_terminated_data)
                 for step, early_terminated_data in skipped_data.items()
-            }
+            },
+            {step: step_labels.get(step, "?") for step in skipped_data},
         )
 
 

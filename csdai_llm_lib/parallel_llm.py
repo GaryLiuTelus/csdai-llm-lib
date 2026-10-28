@@ -218,18 +218,21 @@ def multi_thread_llm(
         return ProcessorOutput(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {})
     completed, defects, failed = [], [], []
     early_terminated: defaultdict[int, list[pl.DataFrame]] = defaultdict(list)
+    early_terminated_names: dict[int, str] = {}
     for processed in processed_data:
         completed.append(processed.completed)
         defects.append(processed.defects)
         failed.append(processed.failed)
         for s, d in processed.early_terminated.items():
             early_terminated[s].append(d)
+        early_terminated_names.update(processed.early_terminated_names)
 
     return ProcessorOutput(
         assembly_dataframe(completed),
         assembly_dataframe(defects),
         assembly_dataframe(failed),
         {s: assembly_dataframe(d) for s, d in early_terminated.items()},
+        early_terminated_names,
     )
 
 

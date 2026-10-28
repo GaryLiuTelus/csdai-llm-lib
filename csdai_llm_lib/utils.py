@@ -169,7 +169,7 @@ def data_processing_timer(logger: logging.Logger | None = None) -> Callable[[Dat
                     len(input_data),
                     len(output_data.defects),
                     failed_count,
-                    "None" if len(output_data.early_terminated) == 0 else ", ".join([f"terminate step: {step}, {len(d)} records" for step, d in output_data.early_terminated.items()]),
+                    "None" if len(output_data.early_terminated) == 0 else ", ".join([f"terminate step: {step} [{output_data.early_terminated_names.get(step, '?')}], {len(d)} records" for step, d in output_data.early_terminated.items()]),
                     len(output_data.completed),
                     readable_time(elapsed_time),
                     elapsed_time/len(input_data)
