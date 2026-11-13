@@ -1,7 +1,10 @@
 import io
 import logging
+import queue
 import sys
-from contextlib import redirect_stderr
+import threading
+import time
+from contextlib import redirect_stderr, suppress
 from dataclasses import dataclass
 from json import dumps
 
@@ -11,21 +14,71 @@ from httplib2 import Http
 
 
 class GoogleChatLoggingHandler(logging.Handler):
+    """Post log records to a Google Chat webhook without ever blocking the caller.
+
+    `emit` only enqueues; a daemon thread does the HTTP calls, with a request
+    timeout and a fresh connection each time (a kept-alive one goes stale and
+    fails with `SSL: UNEXPECTED_EOF_WHILE_READING`). Records are dropped when the
+    queue is full, and delivery failures are reported on stderr at most a few
+    times, so a slow or failing webhook can neither stall the worker threads nor
+    abort the job.
+    """
+
+    _STOP = object()
+    MAX_QUEUED = 500
+    REQUEST_TIMEOUT_SECONDS = 10
+    MIN_INTERVAL_SECONDS = 1.0  # Google Chat allows about one message per second
+    MAX_FAILURE_REPORTS = 3
+
     def __init__(self, chat_webhook: str, level: int = 0) -> None:
         super().__init__(level)
         self.__webhook_url = chat_webhook
-        self.__http = Http()
+        self.__queue: queue.Queue = queue.Queue(maxsize=self.MAX_QUEUED)
+        self.__failures = 0
+        self.__worker = threading.Thread(target=self.__run, daemon=True)
+        self.__worker.start()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self.__http.request(
-                uri=self.__webhook_url,
-                method="POST",
-                headers={"Content-Type": "application/json; charset=UTF-8"},
-                body=dumps({"text": self.format(record)}),
-            )
-        except Exception:  # noqa: BLE001
+            text = self.format(record)
+        except (TypeError, ValueError, KeyError):  # bad %-args or format field
             self.handleError(record)
+            return
+        with suppress(queue.Full):  # drop the record rather than block the caller
+            self.__queue.put_nowait(text)
+
+    def __send(self, text: str) -> None:
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                Http(timeout=self.REQUEST_TIMEOUT_SECONDS).request(
+                    uri=self.__webhook_url,
+                    method="POST",
+                    headers={"Content-Type": "application/json; charset=UTF-8"},
+                    body=dumps({"text": text}),
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+        self.__failures += 1
+        if self.__failures <= self.MAX_FAILURE_REPORTS:
+            print(f"Failed to send chat notification: {last_error!r}", file=sys.stderr)
+
+    def __run(self) -> None:
+        while True:
+            item = self.__queue.get()
+            if item is self._STOP:
+                return
+            self.__send(item)
+            time.sleep(self.MIN_INTERVAL_SECONDS)
+
+    def close(self) -> None:
+        # Give queued messages a bounded time to go out, then stop the worker.
+        try:
+            self.__queue.put(self._STOP, timeout=1)
+            self.__worker.join(timeout=30)
+        finally:
+            super().close()
 
 
 @dataclass
