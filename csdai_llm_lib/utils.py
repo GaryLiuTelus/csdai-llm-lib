@@ -56,7 +56,13 @@ def pl2bq(
         parquet_options = bigquery.ParquetOptions()
         parquet_options.enable_list_inference = True
 
+        try:
+            schema = client.get_table(target_table).schema
+        except NotFound:
+            schema = None
+
         job_config = bigquery.LoadJobConfig(
+            schema=schema,
             source_format=bigquery.SourceFormat.PARQUET,
             parquet_options=parquet_options,
             write_disposition=write_disposition,
