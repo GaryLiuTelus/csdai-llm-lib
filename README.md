@@ -10,7 +10,7 @@ Install with the `vertex` extra:
 dependencies = ["csdai-llm-lib[vertex]"]
 
 [tool.uv.sources]
-csdai-llm-lib = { git = "https://github.com/GaryLiuTelus/csdai-llm-lib.git", tag = "v1.12.0" }
+csdai-llm-lib = { git = "https://github.com/GaryLiuTelus/csdai-llm-lib.git", tag = "v1.12.1" }
 ```
 
 ```python
